@@ -296,6 +296,7 @@ jobs:
             -DBUILD_STATIC=ON \
             -DBUILD_MICROMAMBA=ON
           cmake --build build/ --parallel
+          find ./build
 
       - name: Strip and verify binary
         working-directory: mamba-src
