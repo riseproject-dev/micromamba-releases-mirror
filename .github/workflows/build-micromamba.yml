@@ -31,6 +31,10 @@ env:
   CLI11_VERSION: "v2.6.2"
   KRB5_VERSION: "krb5-1.22.2-final"
 
+defaults:
+  run:
+    shell: bash --noprofile --norc -eux -o pipefail {0}
+
 jobs:
   build:
     name: "Build micromamba ${{ inputs.mamba-version }} (riscv64)"
@@ -248,7 +252,7 @@ jobs:
           git clone --depth 1 --branch "$KRB5_VERSION" \
             https://github.com/krb5/krb5
           pushd krb5/src
-          autoconf -i -f
+          autoreconf -if
           ./configure \
             LDFLAGS="-Wl,--allow-multiple-definition" \
             --prefix="$PREFIX" \
