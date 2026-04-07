@@ -1,0 +1,492 @@
+name: Build micromamba for riscv64
+
+on:
+  workflow_dispatch:
+    inputs:
+      mamba-version:
+        description: "Tag from mamba-org/mamba to build (e.g. 2.5.0)"
+        required: true
+        type: string
+      build-number:
+        description: "Build number (appended to version, e.g. 1 gives 2.5.0-1)"
+        required: false
+        type: string
+        default: "1"
+
+# Dependency version pins — bump these as needed.
+# Checked against mamba 2.5.0's dev/environment-micromamba-static.yml
+# and conda-forge/micromamba-feedstock pinning.
+env:
+  TL_EXPECTED_VERSION: "v1.3.1"
+  FMT_VERSION: "12.1.0"
+  SPDLOG_VERSION: "v1.17.0"
+  NLOHMANN_JSON_VERSION: "v3.12.0"
+  YAML_CPP_VERSION: "yaml-cpp-0.9.0"
+  REPROC_VERSION: "v14.2.5"
+  SIMDJSON_VERSION: "v4.6.1"
+  LIBSOLV_VERSION: "0.7.36"
+  LIBARCHIVE_VERSION: "v3.8.6"
+  CURL_VERSION: "curl-8_19_0"
+  ZSTD_VERSION: "v1.5.7"
+  CLI11_VERSION: "v2.6.2"
+  KRB5_VERSION: "krb5-1.22.2-final"
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -eux -o pipefail {0}
+
+jobs:
+  build:
+    name: "Build micromamba ${{ inputs.mamba-version }} (riscv64)"
+    runs-on: ubuntu-24.04-riscv
+    timeout-minutes: 120
+    permissions:
+      contents: write
+
+    env:
+      PREFIX: "${{ github.workspace }}/deps-install"
+      CMAKE_COMMON: >-
+        -DCMAKE_BUILD_TYPE=Release
+        -DBUILD_SHARED_LIBS=OFF
+        -DBUILD_TESTING=OFF
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config python3 \
+            git ca-certificates curl bison \
+            libssl-dev libbz2-dev liblz4-dev libzstd-dev \
+            zlib1g-dev liblzma-dev libnghttp2-dev \
+            libssh2-1-dev gcc-14 g++-14
+
+      - name: Setup GCC 14 by default
+        run: |
+          sudo ln -srf /usr/bin/gcc-14 /usr/bin/gcc
+          sudo ln -srf /usr/bin/g++-14 /usr/bin/g++
+
+      - name: Setup sccache
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('SCCACHE_GHA_ENABLED', 'on');
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', 'on'); // Force the github action v2
+            core.exportVariable('CMAKE_C_COMPILER_LAUNCHER', 'sccache');
+            core.exportVariable('CMAKE_CXX_COMPILER_LAUNCHER', 'sccache');
+
+      - name: Create deps prefix
+        run: mkdir -p "$PREFIX"
+
+      # ── Header-only libraries ──────────────────────────────────
+
+      - name: "Build dep: tl-expected"
+        run: |
+          git clone --depth 1 --branch "$TL_EXPECTED_VERSION" \
+            https://github.com/TartanLlama/expected.git
+          cmake -S expected -B expected/build \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DEXPECTED_BUILD_TESTS=OFF
+          cmake --install expected/build
+
+      - name: "Build dep: nlohmann_json"
+        run: |
+          git clone --depth 1 --branch "$NLOHMANN_JSON_VERSION" \
+            https://github.com/nlohmann/json.git
+          cmake -S json -B json/build \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DJSON_BuildTests=OFF
+          cmake --install json/build
+
+      - name: "Build dep: CLI11"
+        run: |
+          git clone --depth 1 --branch "$CLI11_VERSION" \
+            https://github.com/CLIUtils/CLI11.git
+          cmake -S CLI11 -B CLI11/build \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCLI11_BUILD_TESTS=OFF \
+            -DCLI11_BUILD_EXAMPLES=OFF
+          cmake --install CLI11/build
+
+      # ── Static libraries ───────────────────────────────────────
+
+      - name: "Build dep: fmt"
+        run: |
+          git clone --depth 1 --branch "$FMT_VERSION" \
+            https://github.com/fmtlib/fmt.git
+          cmake -S fmt -B fmt/build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            $CMAKE_COMMON \
+            -DFMT_TEST=OFF -DFMT_DOC=OFF
+          cmake --build fmt/build --parallel
+          cmake --install fmt/build
+
+      - name: "Build dep: spdlog"
+        run: |
+          git clone --depth 1 --branch "$SPDLOG_VERSION" \
+            https://github.com/gabime/spdlog.git
+          cmake -S spdlog -B spdlog/build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_PREFIX_PATH="$PREFIX" \
+            $CMAKE_COMMON \
+            -DSPDLOG_BUILD_EXAMPLE=OFF \
+            -DSPDLOG_FMT_EXTERNAL=ON
+          cmake --build spdlog/build --parallel
+          cmake --install spdlog/build
+
+      - name: "Build dep: yaml-cpp"
+        run: |
+          git clone --depth 1 --branch "$YAML_CPP_VERSION" \
+            https://github.com/jbeder/yaml-cpp.git
+          cmake -S yaml-cpp -B yaml-cpp/build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            $CMAKE_COMMON \
+            -DYAML_CPP_BUILD_TESTS=OFF
+          cmake --build yaml-cpp/build --parallel
+          cmake --install yaml-cpp/build
+
+      - name: "Build dep: reproc"
+        run: |
+          git clone --depth 1 --branch "$REPROC_VERSION" \
+            https://github.com/DaanDeMeyer/reproc.git
+          cmake -S reproc -B reproc/build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            $CMAKE_COMMON \
+            -DREPROC++=ON \
+            -DREPROC_TEST=OFF \
+            -DREPROC_EXAMPLES=OFF
+          cmake --build reproc/build --parallel
+          cmake --install reproc/build
+
+      - name: "Build dep: simdjson"
+        run: |
+          git clone --depth 1 --branch "$SIMDJSON_VERSION" \
+            https://github.com/simdjson/simdjson.git
+          cmake -S simdjson -B simdjson/build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            $CMAKE_COMMON \
+            -DSIMDJSON_BUILD_STATIC_LIB=ON
+          cmake --build simdjson/build --parallel
+          cmake --install simdjson/build
+
+      - name: "Build dep: libsolv"
+        run: |
+          git clone --depth 1 --branch "$LIBSOLV_VERSION" \
+            https://github.com/openSUSE/libsolv.git
+          cmake -S libsolv -B libsolv/build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_STATIC=ON \
+            -DDISABLE_SHARED=ON \
+            -DENABLE_CONDA=ON \
+            -DMULTI_SEMANTICS=ON \
+            -DWITH_LIBXML2=OFF
+          cmake --build libsolv/build --parallel
+          cmake --install libsolv/build
+
+      - name: "Build dep: libarchive (static)"
+        run: |
+          git clone --depth 1 --branch "$LIBARCHIVE_VERSION" \
+            https://github.com/libarchive/libarchive.git
+          cmake -S libarchive -B libarchive/build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DENABLE_TEST=OFF \
+            -DENABLE_TAR=OFF \
+            -DENABLE_CPIO=OFF \
+            -DENABLE_CAT=OFF \
+            -DENABLE_UNZIP=OFF
+          cmake --build libarchive/build --parallel
+          cmake --install libarchive/build
+
+      - name: "Build dep: curl (static)"
+        run: |
+          git clone --depth 1 --branch "$CURL_VERSION" \
+            https://github.com/curl/curl.git
+          cmake -S curl -B curl/build -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DBUILD_CURL_EXE=OFF \
+            -DBUILD_TESTING=OFF \
+            -DCURL_BROTLI=OFF \
+            -DCURL_DISABLE_LDAP=ON \
+            -DCURL_DISABLE_LDAPS=ON \
+            -DCURL_USE_GSSAPI=OFF \
+            -DCURL_USE_LIBIDN2=OFF \
+            -DCURL_USE_LIBPSL=OFF \
+            -DCURL_USE_LIBSSH2=ON \
+            -DCURL_USE_OPENSSL=ON \
+            -DUSE_NGHTTP2=ON
+          cmake --build curl/build --parallel
+          cmake --install curl/build
+
+      - name: "Build dep: zstd (static)"
+        run: |
+          git clone --depth 1 --branch "$ZSTD_VERSION" \
+            https://github.com/facebook/zstd.git
+          cmake -S zstd/build/cmake -B zstd/builddir -G Ninja \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DZSTD_BUILD_SHARED=OFF \
+            -DZSTD_BUILD_STATIC=ON \
+            -DZSTD_BUILD_PROGRAMS=OFF
+          cmake --build zstd/builddir --parallel
+          cmake --install zstd/builddir
+
+      - name: "Build dep: krb5 (static)"
+        env:
+          CC: "sccache gcc"
+          CXX: "sccache g++"
+        run: |
+          git clone --depth 1 --branch "$KRB5_VERSION" \
+            https://github.com/krb5/krb5
+          pushd krb5/src
+          autoreconf -if
+          ./configure \
+            LDFLAGS="-Wl,--allow-multiple-definition" \
+            --prefix="$PREFIX" \
+            --build=riscv64-linux-gnu \
+            --enable-static \
+            --disable-shared
+          make -j"$(nproc)"
+          make install
+
+      # ── Build micromamba ───────────────────────────────────────
+
+      - name: Verify dependencies
+        run: |
+          echo "=== Installed static libraries in PREFIX ==="
+          find "$PREFIX/lib" -name '*.a' | sort
+          echo ""
+          echo "=== Installed cmake configs in PREFIX ==="
+          find "$PREFIX" -name '*.cmake' | sort
+          echo ""
+          echo "=== pkg-config files in PREFIX ==="
+          find "$PREFIX" -name '*.pc' | sort
+          echo ""
+          echo "=== System static libraries ==="
+          dpkg -L libssl-dev libbz2-dev liblz4-dev libzstd-dev zlib1g-dev liblzma-dev libnghttp2-dev libssh2-1-dev 2>/dev/null | grep '\.a$' | sort
+          echo ""
+          echo "=== Check for required static libs ==="
+          for lib in libcurl.a libssh2.a libssl.a libcrypto.a libarchive.a libbz2.a liblz4.a libzstd.a libz.a liblzma.a libnghttp2.a; do
+            found=$(find "$PREFIX/lib" /usr/lib -name "$lib" 2>/dev/null | head -1)
+            if [ -n "$found" ]; then
+              echo "  OK: $lib -> $found"
+            else
+              echo "  MISSING: $lib"
+            fi
+          done
+
+      - name: Build micromamba
+        env:
+          PKG_CONFIG_PATH: "${{ github.workspace }}/deps-install/lib/pkgconfig:${{ github.workspace }}/deps-install/share/pkgconfig"
+        run: |
+          git clone --depth 1 --branch "${{ inputs.mamba-version }}" \
+            https://github.com/mamba-org/mamba.git
+          # Fix libmamba self-path detection; it breaks the static executable
+          pushd mamba
+          git apply - <<'EOF'
+          diff --git a/libmamba/src/core/util_os.cpp b/libmamba/src/core/util_os.cpp
+          index 474dc2a..3638be2 100644
+          --- a/libmamba/src/core/util_os.cpp
+          +++ b/libmamba/src/core/util_os.cpp
+          @@ -125,17 +125,13 @@ namespace mamba
+                   }
+                   return get_hmodule_path(hModule);
+           #else
+          -        fs::u8path libmamba_path;
+          -        Dl_info dl_info;
+          -        if (!dladdr(reinterpret_cast<void*>(get_libmamba_path), &dl_info))
+          -        {
+          -            throw mamba_error(
+          -                "Could not find libmamba's path. (dladdr failed)",
+          -                mamba_error_code::internal_failure
+          -            );
+          -        }
+          -        libmamba_path = dl_info.dli_fname;
+          -        return libmamba_path;
+          +    Dl_info dl_info;
+          +    if (dladdr(reinterpret_cast<void*>(get_libmamba_path), &dl_info))
+          +    {
+          +        return fs::u8path(dl_info.dli_fname);
+          +    }
+          +    // dladdr fails for statically linked binaries — fall back to the executable path
+          +    return get_self_exe_path();
+           #endif
+               }
+          
+          EOF
+          popd
+          cmake -S mamba -B mamba/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$PREFIX" \
+            -DCMAKE_CXX_FLAGS="-DSPDLOG_FMT_EXTERNAL" \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
+            -DBUILD_LIBMAMBA=ON \
+            -DBUILD_LIBMAMBA_SPDLOG=ON \
+            -DBUILD_STATIC=ON \
+            -DBUILD_MICROMAMBA=ON
+          cmake --build mamba/build --parallel
+
+      - name: Strip and verify binary
+        working-directory: mamba/build
+        run: |
+          strip micromamba/micromamba
+          file micromamba/micromamba
+          ls -lh micromamba/micromamba
+          ./micromamba/micromamba --version
+          # Check it's indeed a static executable
+          if ldd micromamba/micromamba; then
+            echo "micromamba/micromamba is still a dynamic executable"
+            exit 1
+          fi
+
+      # ── Package as conda .tar.bz2 ─────────────────────────────
+
+      - name: Package as conda tarball
+        id: package
+        run: |
+          version="${{ inputs.mamba-version }}"
+          build_number="${{ inputs.build-number }}"
+          arch="$(uname -m)"
+          timestamp="$(date +%s)"
+          release_tag="${version}-${build_number}"
+
+          # Map uname arch to conda subdir
+          case "${arch}" in
+            riscv64) subdir="linux-riscv64" ; conda_arch="riscv64" ;;
+            x86_64)  subdir="linux-64"      ; conda_arch="x86_64"  ;;
+            aarch64) subdir="linux-aarch64"  ; conda_arch="aarch64" ;;
+            *)       subdir="linux-${arch}"  ; conda_arch="${arch}"  ;;
+          esac
+
+          build_string="${build_number}"
+          tarball="micromamba-${version}-${build_string}.tar.bz2"
+
+          # -- Assemble conda package tree --
+          pkg="$(mktemp -d)"
+
+          install -Dm755 mamba/build/micromamba/micromamba "${pkg}/bin/micromamba"
+
+          mkdir -p "${pkg}/info"
+
+          file_size="$(stat -c%s "${pkg}/bin/micromamba")"
+          file_sha256="$(sha256sum "${pkg}/bin/micromamba" | cut -d' ' -f1)"
+
+          # -- info/index.json --
+          python3 -c "
+          import json
+          print(json.dumps({
+              'arch': '${conda_arch}',
+              'build': '${build_string}',
+              'build_number': ${build_number},
+              'depends': ['__glibc >=2.17'],
+              'license': 'BSD-3-Clause',
+              'license_family': 'BSD',
+              'name': 'micromamba',
+              'platform': 'linux',
+              'subdir': '${subdir}',
+              'timestamp': ${timestamp},
+              'version': '${version}'
+          }, indent=2))
+          " > "${pkg}/info/index.json"
+
+          # -- info/about.json --
+          python3 -c "
+          import json
+          print(json.dumps({
+              'channels': ['https://conda.anaconda.org/conda-forge'],
+              'description': 'Micromamba is a tiny version of mamba, the fast conda package installer.',
+              'dev_url': 'https://github.com/mamba-org/mamba',
+              'doc_url': 'https://mamba.readthedocs.io/',
+              'home': 'https://github.com/mamba-org/mamba',
+              'license': 'BSD-3-Clause',
+              'license_family': 'BSD',
+              'license_url': 'https://github.com/mamba-org/mamba/blob/main/LICENSE',
+              'summary': 'Micromamba is a tiny version of mamba, the fast conda package installer.'
+          }, indent=2))
+          " > "${pkg}/info/about.json"
+
+          # -- info/paths.json --
+          python3 -c "
+          import json
+          print(json.dumps({
+              'paths': [{
+                  '_path': 'bin/micromamba',
+                  'path_type': 'hardlink',
+                  'sha256': '${file_sha256}',
+                  'size_in_bytes': ${file_size}
+              }]
+          }, indent=2))
+          " > "${pkg}/info/paths.json"
+
+          # -- info/files --
+          echo "bin/micromamba" > "${pkg}/info/files"
+
+          # -- info/hash_input.json --
+          echo "{}" > "${pkg}/info/hash_input.json"
+
+          # -- info/licenses/LICENSE --
+          mkdir -p "${pkg}/info/licenses"
+          cp mamba/LICENSE "${pkg}/info/licenses/LICENSE"
+
+          # -- Create tarball (conda package convention: info/ first, then files) --
+          (cd "${pkg}" && tar cjf "${GITHUB_WORKSPACE}/${tarball}" \
+            info/index.json \
+            info/about.json \
+            info/paths.json \
+            info/files \
+            info/hash_input.json \
+            info/licenses/LICENSE \
+            bin/micromamba \
+          )
+
+          sha256sum "${tarball}" > "${tarball}.sha256"
+          echo "Contents of ${tarball}:"
+          tar tjf "${tarball}"
+          echo ""
+          echo "index.json:"
+          tar xjf "${tarball}" -O info/index.json
+
+          echo "tarball=${tarball}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "subdir=${subdir}" >> "$GITHUB_OUTPUT"
+
+      # ── Release ────────────────────────────────────────────────
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ steps.package.outputs.release_tag }}"
+          tarball="${{ steps.package.outputs.tarball }}"
+          subdir="${{ steps.package.outputs.subdir }}"
+          version="${{ inputs.mamba-version }}"
+          build_number="${{ inputs.build-number }}"
+
+          notes="Static micromamba build for \`${subdir}\`, packaged as a conda \`.tar.bz2\`.
+
+          Built from [mamba-org/mamba@${version}](https://github.com/mamba-org/mamba/tree/${version}).
+
+          Tarball layout matches \`https://anaconda.org/conda-forge/micromamba/${version}/download/${subdir}/micromamba-${version}-${build_number}.tar.bz2\`.
+
+          ## Usage with miniforge
+
+          \`\`\`bash
+          export MICROMAMBA_SOURCE_URL=\"https://github.com/${{ github.repository }}/releases/download/${tag}/${tarball}\"
+          \`\`\`"
+
+          gh release create "${tag}" \
+            --repo "${{ github.repository }}" \
+            --title "micromamba ${tag} (${subdir})" \
+            --notes "${notes}" \
+            "${tarball}" \
+            "${tarball}.sha256"
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-adv-stats || true
