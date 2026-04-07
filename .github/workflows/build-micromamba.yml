@@ -29,7 +29,7 @@ env:
   CURL_VERSION: "curl-8_19_0"
   ZSTD_VERSION: "v1.5.7"
   CLI11_VERSION: "v2.6.2"
-  KRB5_VERSION: "krb5-1.22.2-final"
+  KRB5_VERSION: "1.22.2"
 
 defaults:
   run:
@@ -249,10 +249,11 @@ jobs:
           CC: "sccache gcc"
           CXX: "sccache g++"
         run: |
-          git clone --depth 1 --branch "$KRB5_VERSION" \
-            https://github.com/krb5/krb5
-          pushd krb5/src
-          autoreconf -if
+          KRB5_MAJOR_MINOR=$(echo "${KRB5_VERSION}" | cut -d. -f1,2)
+          curl -fsSL "https://kerberos.org/dist/krb5/${KRB5_MAJOR_MINOR}/krb5-${KRB5_VERSION}.tar.gz" \
+            -o krb5.tar.gz
+          tar xf krb5.tar.gz
+          cd "krb5-${KRB5_VERSION}/src"
           ./configure \
             LDFLAGS="-Wl,--allow-multiple-definition" \
             --prefix="$PREFIX" \
